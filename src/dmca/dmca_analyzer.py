@@ -9,12 +9,19 @@ import re
 import json
 import requests
 import logging
-import psycopg2
-import psycopg2.extras
 from urllib.parse import unquote
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import time
+
+# Optional PostgreSQL support
+try:
+    import psycopg2
+    import psycopg2.extras
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
+    logging.warning("psycopg2 not available - PostgreSQL tracking disabled. Install with: pip install psycopg2-binary")
 
 # Setup logging
 logging.basicConfig(
@@ -58,6 +65,10 @@ class DMCAAnalyzer:
 
     def _init_database(self):
         """Initialize PostgreSQL connection and create table if it doesn't exist"""
+        if not POSTGRES_AVAILABLE:
+            logging.warning("PostgreSQL tracking disabled - psycopg2 module not available")
+            return
+            
         try:
             # Check if all required DB parameters are set
             missing_params = [key for key, value in self.db_params.items() if not value]
@@ -106,7 +117,7 @@ class DMCAAnalyzer:
 
     def _is_ticket_processed(self, ticket_id: int) -> bool:
         """Check if a ticket has already been processed"""
-        if not self.db_connection:
+        if not POSTGRES_AVAILABLE or not self.db_connection:
             return False
         
         try:
@@ -123,7 +134,7 @@ class DMCAAnalyzer:
     def _mark_ticket_processed(self, ticket_id: int, urls_found: int, urls_converted: int, 
                               airtable_records: int, notes: str = None):
         """Mark a ticket as processed in the database"""
-        if not self.db_connection:
+        if not POSTGRES_AVAILABLE or not self.db_connection:
             return
         
         try:
@@ -147,7 +158,7 @@ class DMCAAnalyzer:
 
     def _get_processed_tickets_summary(self) -> Dict:
         """Get summary of processed tickets from database"""
-        if not self.db_connection:
+        if not POSTGRES_AVAILABLE or not self.db_connection:
             return {"total_processed": 0, "database_available": False}
         
         try:
@@ -528,8 +539,8 @@ class DMCAAnalyzer:
         # Upload to Airtable (Stage 2)
         upload_success = self.upload_to_airtable(airtable_records)
         
-        # Save results
-        filename = self.save_analysis_to_file(analysis_results)
+        # Save results to JSON file - REMOVED: Using Postgres-only tracking
+        # filename = self.save_analysis_to_file(analysis_results)
         
         # Print summary
         total_tickets = len(analysis_results)
@@ -544,7 +555,6 @@ class DMCAAnalyzer:
         URLs found: {total_urls}
         URLs converted: {total_converted}
         Airtable records ready: {len(airtable_records)}
-        Results saved to: {filename}
         Database tracking: {'Active' if db_summary['database_available'] else 'Disabled'}
         """)
         
@@ -552,7 +562,7 @@ class DMCAAnalyzer:
 
     def close_database_connection(self):
         """Close the database connection"""
-        if self.db_connection:
+        if POSTGRES_AVAILABLE and self.db_connection:
             try:
                 self.db_connection.close()
                 logging.info("Database connection closed")
@@ -592,11 +602,17 @@ def main():
         else:
             print(f"\n⚠️  DATABASE TRACKING")
             print("="*20)
-            print("PostgreSQL tracking disabled - missing environment variables:")
-            missing = [k for k, v in analyzer.db_params.items() if not v]
-            for param in missing:
-                print(f"  • {param.upper()}")
-            print("Set these variables to enable duplicate prevention.")
+            if not POSTGRES_AVAILABLE:
+                print("PostgreSQL tracking disabled - psycopg2 module not available")
+                print("Install with: pip install psycopg2-binary")
+                print("⚠️  WARNING: All tickets will be processed every run (no duplicate prevention)")
+            else:
+                print("PostgreSQL tracking disabled - missing environment variables:")
+                missing = [k for k, v in analyzer.db_params.items() if not v]
+                for param in missing:
+                    print(f"  • {param.upper()}")
+                print("Set these variables to enable duplicate prevention.")
+                print("⚠️  WARNING: All tickets will be processed every run (no duplicate prevention)")
         
         if analysis_results:
             print(f"\n🎯 THIS RUN RESULTS")
