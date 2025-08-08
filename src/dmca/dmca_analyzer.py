@@ -90,6 +90,7 @@ class DMCAAnalyzer:
                     CREATE TABLE IF NOT EXISTS zendesk.dmca_automation (
                         id SERIAL PRIMARY KEY,
                         ticket_id BIGINT UNIQUE NOT NULL,
+                        ticket_url TEXT,
                         processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         urls_found INTEGER DEFAULT 0,
                         urls_converted INTEGER DEFAULT 0,
@@ -104,6 +105,21 @@ class DMCAAnalyzer:
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_dmca_automation_ticket_id 
                     ON zendesk.dmca_automation (ticket_id);
+                """)
+                
+                # Add ticket_url column if it doesn't exist (migration for existing tables)
+                cursor.execute("""
+                    DO $$ 
+                    BEGIN 
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_schema = 'zendesk' 
+                            AND table_name = 'dmca_automation' 
+                            AND column_name = 'ticket_url'
+                        ) THEN 
+                            ALTER TABLE zendesk.dmca_automation ADD COLUMN ticket_url TEXT;
+                        END IF; 
+                    END $$;
                 """)
                 
             logging.info("PostgreSQL database initialized successfully")
@@ -132,29 +148,35 @@ class DMCAAnalyzer:
             return False
 
     def _mark_ticket_processed(self, ticket_id: int, urls_found: int, urls_converted: int, 
-                              airtable_records: int, notes: str = None):
+                              airtable_records: int, ticket_url: str = None, notes: str = None):
         """Mark a ticket as processed in the database"""
         if not POSTGRES_AVAILABLE or not self.db_connection:
             return
         
         try:
             with self.db_connection.cursor() as cursor:
+                # Ensure ticket_id is stored as integer without formatting
+                ticket_id_int = int(ticket_id) if ticket_id else None
+                
                 cursor.execute("""
                     INSERT INTO zendesk.dmca_automation 
-                    (ticket_id, urls_found, urls_converted, airtable_records, notes)
-                    VALUES (%s, %s, %s, %s, %s)
+                    (ticket_id, ticket_url, urls_found, urls_converted, airtable_records, notes)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (ticket_id) DO UPDATE SET
                         processed_at = CURRENT_TIMESTAMP,
+                        ticket_url = EXCLUDED.ticket_url,
                         urls_found = EXCLUDED.urls_found,
                         urls_converted = EXCLUDED.urls_converted,
                         airtable_records = EXCLUDED.airtable_records,
                         notes = EXCLUDED.notes
-                """, (ticket_id, urls_found, urls_converted, airtable_records, notes))
+                """, (ticket_id_int, ticket_url, urls_found, urls_converted, airtable_records, notes))
                 
-            logging.info(f"Marked ticket {ticket_id} as processed in database")
+            logging.info(f"Marked ticket {ticket_id_int} as processed in database")
             
         except psycopg2.Error as e:
             logging.error(f"Error marking ticket {ticket_id} as processed: {e}")
+        except (ValueError, TypeError) as e:
+            logging.error(f"Invalid ticket_id format {ticket_id}: {e}")
 
     def _get_processed_tickets_summary(self) -> Dict:
         """Get summary of processed tickets from database"""
@@ -519,11 +541,16 @@ class DMCAAnalyzer:
                 
                 # Mark ticket as processed in database
                 notes = f"Subject: {result['subject'][:100]}..." if len(result['subject']) > 100 else result['subject']
+                
+                # Generate agent URL instead of using API URL
+                agent_url = f"https://rariblecom.zendesk.com/agent/tickets/{ticket_id}"
+                
                 self._mark_ticket_processed(
                     ticket_id,
                     result['total_urls_found'],
                     result['total_converted'],
                     result['total_converted'],  # Each converted URL becomes an Airtable record
+                    agent_url,  # Use agent URL format
                     notes
                 )
                 
@@ -531,7 +558,9 @@ class DMCAAnalyzer:
                 logging.error(f"Error analyzing ticket {ticket_id}: {e}")
                 # Mark as processed with error status
                 if ticket_id:
-                    self._mark_ticket_processed(ticket_id, 0, 0, 0, f"Error: {str(e)[:200]}")
+                    # Generate agent URL for error cases too
+                    agent_url = f"https://rariblecom.zendesk.com/agent/tickets/{ticket_id}"
+                    self._mark_ticket_processed(ticket_id, 0, 0, 0, agent_url, f"Error: {str(e)[:200]}")
         
         # Prepare for Airtable
         airtable_records = self.prepare_for_airtable(analysis_results)
