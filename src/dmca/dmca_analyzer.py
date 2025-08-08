@@ -241,11 +241,25 @@ class DMCAAnalyzer:
         
         for result in analysis_results:
             for converted_url in result['converted_urls']:
+                # Convert Zendesk datetime to date-only format for Airtable
+                zendesk_date = result['created_at']
+                if zendesk_date:
+                    try:
+                        # Parse ISO datetime and extract date only
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(zendesk_date.replace('Z', '+00:00'))
+                        airtable_date = dt.strftime('%Y-%m-%d')
+                    except:
+                        # Fallback to original if parsing fails
+                        airtable_date = zendesk_date[:10]  # Take first 10 chars (YYYY-MM-DD)
+                else:
+                    airtable_date = ''
+                
                 # Create a record for each converted URL matching Airtable columns
                 record = {
                     'fields': {
                         'item': converted_url['converted'],
-                        'Date Received': result['created_at'],
+                        'Date Received': airtable_date,
                         'Zendesk': result['zendesk_url'],
                         'Status': 'Done',
                         'Notes': f"Ticket #{result['ticket_id']}: {result['subject']}\nOriginal URL: {converted_url['original_url']}"
