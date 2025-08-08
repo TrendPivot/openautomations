@@ -114,7 +114,7 @@ class AirtableTestSuite:
             'records': [{
                 'fields': {
                     'item': 'TEST-0x1234567890abcdef:999',
-                    'Date Received': datetime.now().isoformat(),
+                    'Date Received': datetime.now().strftime('%Y-%m-%d'),  # Date only format
                     'Zendesk': f'https://rariblecom.zendesk.com/agent/tickets/TEST-{datetime.now().strftime("%H%M%S")}',
                     'Status': 'Done',
                     'Notes': f'Test record created by Airtable test suite at {datetime.now()}'
