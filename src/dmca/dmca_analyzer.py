@@ -315,7 +315,7 @@ class DMCAAnalyzer:
         logging.info(f"Analysis results saved to {filename}")
         return filename
 
-    def run_analysis(self) -> Tuple[List[Dict], List[Dict]]:
+    def run_analysis(self) -> Tuple[List[Dict], List[Dict], bool]:
         """Run the complete DMCA analysis pipeline"""
         logging.info("Starting DMCA analysis pipeline...")
         
@@ -323,7 +323,7 @@ class DMCAAnalyzer:
         tickets = self.fetch_dmca_tickets()
         if not tickets:
             logging.warning("No tickets found to analyze")
-            return [], []
+            return [], [], False
         
         # Analyze each ticket
         analysis_results = []
@@ -339,7 +339,7 @@ class DMCAAnalyzer:
         airtable_records = self.prepare_for_airtable(analysis_results)
         
         # Upload to Airtable (Stage 2)
-        self.upload_to_airtable(airtable_records)
+        upload_success = self.upload_to_airtable(airtable_records)
         
         # Save results
         filename = self.save_analysis_to_file(analysis_results)
@@ -359,7 +359,7 @@ class DMCAAnalyzer:
         Results saved to: {filename}
         """)
         
-        return analysis_results, airtable_records
+        return analysis_results, airtable_records, upload_success
 
 def main():
     """Main function to run the DMCA analyzer"""
@@ -371,7 +371,7 @@ def main():
         return
     
     try:
-        analysis_results, airtable_records = analyzer.run_analysis()
+        analysis_results, airtable_records, upload_success = analyzer.run_analysis()
         
         print("\n" + "="*50)
         print("DMCA ANALYSIS SUMMARY")
@@ -393,8 +393,15 @@ def main():
             print(f"\n🔗 AIRTABLE INTEGRATION")
             print("="*25)
             if analyzer.airtable_api_key:
-                print(f"✅ Records uploaded to Airtable: {len(airtable_records)}")
-                print(f"🌐 View results: {analyzer.airtable_web_url}")
+                # Check if upload was successful by calling upload function again
+                # The upload_success flag is already returned by run_analysis
+                if upload_success:
+                    print(f"✅ Records uploaded to Airtable: {len(airtable_records)}")
+                    print(f"🌐 View results: {analyzer.airtable_web_url}")
+                else:
+                    print(f"❌ Upload failed - check API key and permissions")
+                    print(f"📊 Records prepared but not uploaded: {len(airtable_records)}")
+                    print("🔧 Run 'python3 test_airtable.py' to diagnose the issue")
             else:
                 print("⚠️  AIRTABLE_API_KEY not set - records prepared but not uploaded")
                 print(f"📊 Records ready for upload: {len(airtable_records)}")
