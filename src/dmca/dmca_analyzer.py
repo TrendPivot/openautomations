@@ -9,6 +9,8 @@ import re
 import json
 import requests
 import logging
+import psycopg2
+import psycopg2.extras
 from urllib.parse import unquote
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
@@ -35,11 +37,142 @@ class DMCAAnalyzer:
         self.airtable_base_url = f"https://api.airtable.com/v0/{self.airtable_app_id}/{self.airtable_table_id}"
         self.airtable_web_url = f"https://airtable.com/{self.airtable_app_id}/{self.airtable_table_id}/{self.airtable_view_id}?blocks=hide"
         
+        # PostgreSQL connection parameters from environment variables
+        self.db_params = {
+            "dbname": os.getenv("PG_DATABASE"),
+            "user": os.getenv("PG_USER"),
+            "password": os.getenv("PG_PASSWORD"),
+            "host": os.getenv("PG_HOST"),
+            "port": os.getenv("PG_PORT")
+        }
+        
+        # Initialize database connection
+        self.db_connection = None
+        self._init_database()
+        
         # URL extraction regex
         self.url_regex = re.compile(
             r'((?:https?://)?(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*[-a-zA-Z0-9@:%_\+~#?&//=]))',
             re.IGNORECASE
         )
+
+    def _init_database(self):
+        """Initialize PostgreSQL connection and create table if it doesn't exist"""
+        try:
+            # Check if all required DB parameters are set
+            missing_params = [key for key, value in self.db_params.items() if not value]
+            if missing_params:
+                logging.warning(f"Missing PostgreSQL parameters: {missing_params}. Database tracking disabled.")
+                return
+            
+            # Establish connection
+            self.db_connection = psycopg2.connect(**self.db_params)
+            self.db_connection.autocommit = True
+            
+            # Create schema and table if they don't exist
+            with self.db_connection.cursor() as cursor:
+                # Create schema
+                cursor.execute("CREATE SCHEMA IF NOT EXISTS zendesk;")
+                
+                # Create table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS zendesk.dmca_automation (
+                        id SERIAL PRIMARY KEY,
+                        ticket_id BIGINT UNIQUE NOT NULL,
+                        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        urls_found INTEGER DEFAULT 0,
+                        urls_converted INTEGER DEFAULT 0,
+                        airtable_records INTEGER DEFAULT 0,
+                        status VARCHAR(50) DEFAULT 'processed',
+                        notes TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                
+                # Create index on ticket_id for faster lookups
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_dmca_automation_ticket_id 
+                    ON zendesk.dmca_automation (ticket_id);
+                """)
+                
+            logging.info("PostgreSQL database initialized successfully")
+            
+        except psycopg2.Error as e:
+            logging.error(f"Failed to initialize PostgreSQL connection: {e}")
+            self.db_connection = None
+        except Exception as e:
+            logging.error(f"Unexpected error initializing database: {e}")
+            self.db_connection = None
+
+    def _is_ticket_processed(self, ticket_id: int) -> bool:
+        """Check if a ticket has already been processed"""
+        if not self.db_connection:
+            return False
+        
+        try:
+            with self.db_connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM zendesk.dmca_automation WHERE ticket_id = %s",
+                    (ticket_id,)
+                )
+                return cursor.fetchone() is not None
+        except psycopg2.Error as e:
+            logging.error(f"Error checking if ticket {ticket_id} is processed: {e}")
+            return False
+
+    def _mark_ticket_processed(self, ticket_id: int, urls_found: int, urls_converted: int, 
+                              airtable_records: int, notes: str = None):
+        """Mark a ticket as processed in the database"""
+        if not self.db_connection:
+            return
+        
+        try:
+            with self.db_connection.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO zendesk.dmca_automation 
+                    (ticket_id, urls_found, urls_converted, airtable_records, notes)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (ticket_id) DO UPDATE SET
+                        processed_at = CURRENT_TIMESTAMP,
+                        urls_found = EXCLUDED.urls_found,
+                        urls_converted = EXCLUDED.urls_converted,
+                        airtable_records = EXCLUDED.airtable_records,
+                        notes = EXCLUDED.notes
+                """, (ticket_id, urls_found, urls_converted, airtable_records, notes))
+                
+            logging.info(f"Marked ticket {ticket_id} as processed in database")
+            
+        except psycopg2.Error as e:
+            logging.error(f"Error marking ticket {ticket_id} as processed: {e}")
+
+    def _get_processed_tickets_summary(self) -> Dict:
+        """Get summary of processed tickets from database"""
+        if not self.db_connection:
+            return {"total_processed": 0, "database_available": False}
+        
+        try:
+            with self.db_connection.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total_processed,
+                        SUM(urls_found) as total_urls_found,
+                        SUM(urls_converted) as total_urls_converted,
+                        SUM(airtable_records) as total_airtable_records,
+                        MAX(processed_at) as last_processed
+                    FROM zendesk.dmca_automation
+                """)
+                result = cursor.fetchone()
+                return {
+                    "total_processed": result['total_processed'] or 0,
+                    "total_urls_found": result['total_urls_found'] or 0,
+                    "total_urls_converted": result['total_urls_converted'] or 0,
+                    "total_airtable_records": result['total_airtable_records'] or 0,
+                    "last_processed": result['last_processed'],
+                    "database_available": True
+                }
+        except psycopg2.Error as e:
+            logging.error(f"Error getting processed tickets summary: {e}")
+            return {"total_processed": 0, "database_available": False}
 
     def fetch_dmca_tickets(self) -> List[Dict]:
         """Fetch DMCA tickets from Zendesk using search API"""
@@ -333,21 +466,61 @@ class DMCAAnalyzer:
         """Run the complete DMCA analysis pipeline"""
         logging.info("Starting DMCA analysis pipeline...")
         
+        # Get database summary before processing
+        db_summary = self._get_processed_tickets_summary()
+        if db_summary["database_available"]:
+            logging.info(f"Database tracking active - {db_summary['total_processed']} tickets previously processed")
+        else:
+            logging.warning("Database tracking unavailable - duplicate processing may occur")
+        
         # Fetch tickets
         tickets = self.fetch_dmca_tickets()
         if not tickets:
             logging.warning("No tickets found to analyze")
             return [], [], False
         
-        # Analyze each ticket
-        analysis_results = []
+        # Filter out already processed tickets
+        new_tickets = []
+        skipped_count = 0
+        
         for ticket in tickets:
+            ticket_id = ticket.get('id')
+            if ticket_id and self._is_ticket_processed(ticket_id):
+                skipped_count += 1
+                logging.info(f"Skipping already processed ticket {ticket_id}")
+                continue
+            new_tickets.append(ticket)
+        
+        logging.info(f"Found {len(tickets)} total tickets, {skipped_count} already processed, {len(new_tickets)} new to process")
+        
+        if not new_tickets:
+            logging.info("No new tickets to process")
+            return [], [], True
+        
+        # Analyze each new ticket
+        analysis_results = []
+        for ticket in new_tickets:
+            ticket_id = ticket.get('id')
             try:
                 result = self.analyze_ticket(ticket)
                 analysis_results.append(result)
                 logging.info(f"Analyzed ticket {result['ticket_id']}: {result['total_converted']} URLs converted")
+                
+                # Mark ticket as processed in database
+                notes = f"Subject: {result['subject'][:100]}..." if len(result['subject']) > 100 else result['subject']
+                self._mark_ticket_processed(
+                    ticket_id,
+                    result['total_urls_found'],
+                    result['total_converted'],
+                    result['total_converted'],  # Each converted URL becomes an Airtable record
+                    notes
+                )
+                
             except Exception as e:
-                logging.error(f"Error analyzing ticket {ticket.get('id', 'unknown')}: {e}")
+                logging.error(f"Error analyzing ticket {ticket_id}: {e}")
+                # Mark as processed with error status
+                if ticket_id:
+                    self._mark_ticket_processed(ticket_id, 0, 0, 0, f"Error: {str(e)[:200]}")
         
         # Prepare for Airtable
         airtable_records = self.prepare_for_airtable(analysis_results)
@@ -366,14 +539,25 @@ class DMCAAnalyzer:
         logging.info(f"""
         Analysis Complete!
         ================
-        Tickets analyzed: {total_tickets}
+        New tickets analyzed: {total_tickets}
+        Tickets skipped (already processed): {skipped_count}
         URLs found: {total_urls}
         URLs converted: {total_converted}
         Airtable records ready: {len(airtable_records)}
         Results saved to: {filename}
+        Database tracking: {'Active' if db_summary['database_available'] else 'Disabled'}
         """)
         
         return analysis_results, airtable_records, upload_success
+
+    def close_database_connection(self):
+        """Close the database connection"""
+        if self.db_connection:
+            try:
+                self.db_connection.close()
+                logging.info("Database connection closed")
+            except Exception as e:
+                logging.error(f"Error closing database connection: {e}")
 
 def main():
     """Main function to run the DMCA analyzer"""
@@ -385,13 +569,38 @@ def main():
         return
     
     try:
+        # Get initial database summary
+        db_summary = analyzer._get_processed_tickets_summary()
+        
         analysis_results, airtable_records, upload_success = analyzer.run_analysis()
         
         print("\n" + "="*50)
         print("DMCA ANALYSIS SUMMARY")
         print("="*50)
         
+        # Database tracking summary
+        if db_summary["database_available"]:
+            updated_summary = analyzer._get_processed_tickets_summary()
+            print(f"\n📊 DATABASE TRACKING")
+            print("="*20)
+            print(f"Total tickets ever processed: {updated_summary['total_processed']}")
+            print(f"Total URLs found: {updated_summary['total_urls_found']}")
+            print(f"Total URLs converted: {updated_summary['total_urls_converted']}")
+            print(f"Total Airtable records: {updated_summary['total_airtable_records']}")
+            if updated_summary['last_processed']:
+                print(f"Last processed: {updated_summary['last_processed']}")
+        else:
+            print(f"\n⚠️  DATABASE TRACKING")
+            print("="*20)
+            print("PostgreSQL tracking disabled - missing environment variables:")
+            missing = [k for k, v in analyzer.db_params.items() if not v]
+            for param in missing:
+                print(f"  • {param.upper()}")
+            print("Set these variables to enable duplicate prevention.")
+        
         if analysis_results:
+            print(f"\n🎯 THIS RUN RESULTS")
+            print("="*20)
             for result in analysis_results:
                 print(f"\nTicket #{result['ticket_id']}")
                 print(f"Subject: {result['subject']}")
@@ -407,8 +616,6 @@ def main():
             print(f"\n🔗 AIRTABLE INTEGRATION")
             print("="*25)
             if analyzer.airtable_api_key:
-                # Check if upload was successful by calling upload function again
-                # The upload_success flag is already returned by run_analysis
                 if upload_success:
                     print(f"✅ Records uploaded to Airtable: {len(airtable_records)}")
                     print(f"🌐 View results: {analyzer.airtable_web_url}")
@@ -421,10 +628,14 @@ def main():
                 print(f"📊 Records ready for upload: {len(airtable_records)}")
                 print("💡 Set AIRTABLE_API_KEY to enable automatic upload")
         else:
-            print("No DMCA tickets found to analyze")
+            print("\n✅ No new DMCA tickets found to analyze")
+            print("All current open tickets have already been processed.")
         
     except Exception as e:
         logging.error(f"Analysis failed: {e}")
+    finally:
+        # Ensure database connection is properly closed
+        analyzer.close_database_connection()
 
 if __name__ == "__main__":
     main() 
