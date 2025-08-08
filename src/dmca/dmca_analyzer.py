@@ -532,6 +532,8 @@ class DMCAAnalyzer:
         
         # Analyze each new ticket
         analysis_results = []
+        automation_notes_added = 0
+        
         for ticket in new_tickets:
             ticket_id = ticket.get('id')
             try:
@@ -554,6 +556,15 @@ class DMCAAnalyzer:
                     notes
                 )
                 
+                # Add internal note to ticket after successful processing
+                automation_note = "🤖OpenAutomations: DMCA request is processed"
+                note_success = self.add_internal_note(ticket_id, automation_note)
+                if note_success:
+                    automation_notes_added += 1
+                    logging.info(f"Added automation note to ticket {ticket_id}")
+                else:
+                    logging.warning(f"Failed to add automation note to ticket {ticket_id}")
+                
             except Exception as e:
                 logging.error(f"Error analyzing ticket {ticket_id}: {e}")
                 # Mark as processed with error status
@@ -561,6 +572,7 @@ class DMCAAnalyzer:
                     # Generate agent URL for error cases too
                     agent_url = f"https://rariblecom.zendesk.com/agent/tickets/{ticket_id}"
                     self._mark_ticket_processed(ticket_id, 0, 0, 0, agent_url, f"Error: {str(e)[:200]}")
+                    # Note: Don't add automation note for failed tickets
         
         # Prepare for Airtable
         airtable_records = self.prepare_for_airtable(analysis_results)
@@ -584,6 +596,7 @@ class DMCAAnalyzer:
         URLs found: {total_urls}
         URLs converted: {total_converted}
         Airtable records ready: {len(airtable_records)}
+        Automation notes added: {automation_notes_added}
         Database tracking: {'Active' if db_summary['database_available'] else 'Disabled'}
         """)
         
@@ -597,6 +610,53 @@ class DMCAAnalyzer:
                 logging.info("Database connection closed")
             except Exception as e:
                 logging.error(f"Error closing database connection: {e}")
+
+    def add_internal_note(self, ticket_id: int, note_text: str) -> bool:
+        """Add an internal note to a specific Zendesk ticket"""
+        try:
+            # Zendesk API endpoint for adding comments
+            url = f"https://rariblecom.zendesk.com/api/v2/tickets/{ticket_id}.json"
+            
+            # Payload for internal comment
+            payload = {
+                "ticket": {
+                    "comment": {
+                        "body": note_text,
+                        "public": False,  # Internal note (not visible to requester)
+                        "author_id": None  # Will use the authenticated user
+                    }
+                }
+            }
+            
+            logging.info(f"Adding internal note to ticket {ticket_id}: {note_text}")
+            
+            # Make the API request
+            response = requests.put(
+                url,
+                json=payload,
+                auth=self.zendesk_auth,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                timeout=30
+            )
+            
+            # Check response
+            if response.status_code == 200:
+                logging.info(f"✅ Successfully added internal note to ticket {ticket_id}")
+                return True
+            else:
+                logging.error(f"❌ Failed to add note to ticket {ticket_id}. Status: {response.status_code}")
+                logging.error(f"Response: {response.text}")
+                return False
+                
+        except requests.RequestException as e:
+            logging.error(f"❌ Request failed when adding note to ticket {ticket_id}: {e}")
+            return False
+        except Exception as e:
+            logging.error(f"❌ Unexpected error adding note to ticket {ticket_id}: {e}")
+            return False
 
 def main():
     """Main function to run the DMCA analyzer"""
@@ -646,6 +706,10 @@ def main():
         if analysis_results:
             print(f"\n🎯 THIS RUN RESULTS")
             print("="*20)
+            
+            # Get automation notes count from the analysis
+            total_notes_attempted = len(analysis_results)
+            
             for result in analysis_results:
                 print(f"\nTicket #{result['ticket_id']}")
                 print(f"Subject: {result['subject']}")
@@ -656,6 +720,12 @@ def main():
                     print("Converted URLs:")
                     for url_data in result['converted_urls']:
                         print(f"  • {url_data['converted']} (from {url_data['original_url'][:60]}...)")
+            
+            print(f"\n🤖 AUTOMATION NOTES")
+            print("="*20)
+            print(f"Notes attempted: {total_notes_attempted}")
+            print(f'Note text: "🤖OpenAutomations: DMCA request is processed"')
+            print("Check individual ticket logs for note success/failure details")
             
             # Airtable integration summary
             print(f"\n🔗 AIRTABLE INTEGRATION")
