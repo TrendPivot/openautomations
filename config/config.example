@@ -1,0 +1,19 @@
+# Example Configuration for DMCA Analyzer
+# Copy this file to .env in the project root or set these as environment variables
+
+# Zendesk Configuration (Required)
+ZENDESK_PASSWORD=your_zendesk_api_token_here
+
+# Airtable Configuration (Stage 2 - Optional)
+AIRTABLE_API_KEY=your_airtable_api_key_here
+AIRTABLE_BASE_ID=your_airtable_base_id_here
+AIRTABLE_TABLE_NAME=DMCA_Requests
+
+# Logging Configuration
+LOG_LEVEL=INFO
+LOG_FILE=dmca_analyzer.log
+
+# Output Configuration
+OUTPUT_DIR=output
+SAVE_JSON=true
+JSON_INDENT=2 
