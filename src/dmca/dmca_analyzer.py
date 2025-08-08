@@ -371,7 +371,9 @@ class DMCAAnalyzer:
         subject = ticket.get('subject', '')
         description = ticket.get('description', '')
         created_at = ticket.get('created_at', '')
-        url = ticket.get('url', '')
+        
+        # Generate agent URL instead of using API URL
+        agent_url = f"https://rariblecom.zendesk.com/agent/tickets/{ticket_id}" if ticket_id else ""
         
         # Extract URLs from description
         urls = self.extract_urls_from_description(description)
@@ -391,7 +393,7 @@ class DMCAAnalyzer:
             'subject': subject,
             'description': description[:500] + '...' if len(description) > 500 else description,
             'created_at': created_at,
-            'zendesk_url': url,
+            'zendesk_url': agent_url,
             'extracted_urls': urls,
             'converted_urls': converted_urls,
             'total_urls_found': len(urls),
