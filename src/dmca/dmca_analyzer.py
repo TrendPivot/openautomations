@@ -288,15 +288,19 @@ class DMCAAnalyzer:
     def convert_rarible_url(self, url: str) -> str:
         """Convert Rarible URLs to standardized format"""
         # Rarible user with chain pattern
-        rarible_user_chain_pattern = r'https://((?:beta\.|testnet\.)?rarible\.com)/user/(ethereum|polygon|mantle|immutablex|flow|arbitrum|chiliz|lightlink|celo|zksync|base|rari|astarzkevm|kroma|xai|sei|oasys|saakuru|palm|lisk|etherlink|moonbeam|fivire|match|alephzero|aptos|shape|eclipse|telos|solana|abstract|berachain|apechain|arenaz|basecamptestnet|crossfi|goat|hederaevm|hyperevm|megaethtestnet|settlus|somniatestnet|viction|zkcandy)/([a-zA-Z0-9-]+)/?(?:owned|items)?/?$'
+        rarible_user_chain_pattern = r'https://((?:beta\.|testnet\.)?rarible\.com)/user/(ethereum|polygon|mantle|immutablex|flow|arbitrum|chiliz|lightlink|celo|zksync|base|rari|astarzkevm|kroma|xai|sei|oasys|saakuru|palm|lisk|etherlink|moonbeam|fivire|match|alephzero|aptos|shape|eclipse|telos|solana|abstract|berachain|apechain|arenaz|basecamptestnet|crossfi|goat|hederaevm|hyperevm|megaeth-?testnet|settlus|somniatestnet|viction|zkcandy)/([a-zA-Z0-9-]+)/?(?:owned|items)?/?$'
         match = re.search(rarible_user_chain_pattern, url, re.IGNORECASE)
         
         if match:
             chain, address = match.group(2), match.group(3)
-            return f"{chain.upper()}-{address.lower()}"
+            # Normalize hyphenated MegaETH Testnet to consistent identifier
+            normalized_chain = chain.lower()
+            if normalized_chain == 'megaeth-testnet':
+                normalized_chain = 'megaethtestnet'
+            return f"{normalized_chain.upper()}-{address.lower()}"
         
         # Main Rarible pattern (token/collection)
-        rarible_main_pattern = r'https://((?:beta\.|testnet\.)?rarible\.com)/(user|token|collection)/(?:(ethereum|polygon|mantle|immutablex|flow|arbitrum|chiliz|lightlink|celo|zksync|base|rari|astarzkevm|kroma|xai|sei|oasys|saakuru|palm|lisk|etherlink|moonbeam|fivire|match|alephzero|aptos|shape|eclipse|telos|solana|abstract|berachain|apechain|arenaz|basecamptestnet|crossfi|goat|hederaevm|hyperevm|megaethtestnet|settlus|somniatestnet|viction|zkcandy)/)?([a-zA-Z0-9-]+)(?::([a-zA-Z0-9]+))?/?(?:owned|items)?/?$'
+        rarible_main_pattern = r'https://((?:beta\.|testnet\.)?rarible\.com)/(user|token|collection)/(?:(ethereum|polygon|mantle|immutablex|flow|arbitrum|chiliz|lightlink|celo|zksync|base|rari|astarzkevm|kroma|xai|sei|oasys|saakuru|palm|lisk|etherlink|moonbeam|fivire|match|alephzero|aptos|shape|eclipse|telos|solana|abstract|berachain|apechain|arenaz|basecamptestnet|crossfi|goat|hederaevm|hyperevm|megaeth-?testnet|settlus|somniatestnet|viction|zkcandy)/)?([a-zA-Z0-9-]+)(?::([a-zA-Z0-9]+))?/?(?:owned|items)?/?$'
         match = re.search(rarible_main_pattern, url, re.IGNORECASE)
         
         if match:
@@ -309,20 +313,40 @@ class DMCAAnalyzer:
                 return f"ETHEREUM-{contract}"
             
             # Handle special cases for chains without token IDs
-            if chain.lower() in ['eclipse', 'solana']:
-                return f"{chain.upper()}-{contract}"
+            normalized_chain = chain.lower()
+            if normalized_chain == 'megaeth-testnet':
+                normalized_chain = 'megaethtestnet'
+            if normalized_chain in ['eclipse', 'solana']:
+                return f"{normalized_chain.upper()}-{contract}"
             
-            return f"{chain.upper()}-{contract}{':' + token_id if token_id else ''}"
+            return f"{normalized_chain.upper()}-{contract}{':' + token_id if token_id else ''}"
+        
+        # Rarible chain-first pattern (e.g., https://rarible.com/megaethtestnet/collections/0x...[:tokenId])
+        rarible_chain_first_pattern = r'https://((?:beta\.|testnet\.)?rarible\.com)/([a-zA-Z0-9-]+)/(collections|items)/([a-zA-Z0-9x]+)(?::([a-zA-Z0-9]+))?(?:/.*)?(?:\?.*)?$'
+        match = re.search(rarible_chain_first_pattern, url, re.IGNORECASE)
+        if match:
+            chain = match.group(2)
+            contract = match.group(4).lower()
+            token_id = match.group(5) or ""
+            normalized_chain = chain.lower()
+            if normalized_chain == 'megaeth-testnet':
+                normalized_chain = 'megaethtestnet'
+            if normalized_chain in ['eclipse', 'solana']:
+                return f"{normalized_chain.upper()}-{contract}"
+            return f"{normalized_chain.upper()}-{contract}{':' + token_id if token_id else ''}"
         
         # Simplified Rarible collection pattern
-        rarible_simple_pattern = r'rarible\.com/collection/(ethereum|polygon|mantle|immutablex|flow|arbitrum|chiliz|lightlink|celo|zksync|base|rari|astarzkevm|kroma|xai|sei|oasys|saakuru|palm|lisk|etherlink|moonbeam|fivire|match|alephzero|aptos|shape|eclipse|telos|solana|abstract|berachain|apechain|arenaz|basecamptestnet|crossfi|goat|hederaevm|hyperevm|megaethtestnet|settlus|somniatestnet|viction|zkcandy)/([a-zA-Z0-9]+)/?(?:items)?$'
+        rarible_simple_pattern = r'rarible\.com/collection/(ethereum|polygon|mantle|immutablex|flow|arbitrum|chiliz|lightlink|celo|zksync|base|rari|astarzkevm|kroma|xai|sei|oasys|saakuru|palm|lisk|etherlink|moonbeam|fivire|match|alephzero|aptos|shape|eclipse|telos|solana|abstract|berachain|apechain|arenaz|basecamptestnet|crossfi|goat|hederaevm|hyperevm|megaeth-?testnet|settlus|somniatestnet|viction|zkcandy)/([a-zA-Z0-9]+)/?(?:items)?$'
         match = re.search(rarible_simple_pattern, url, re.IGNORECASE)
         
         if match:
             chain, contract = match.groups()
-            if chain.lower() in ['eclipse', 'solana']:
-                return f"{chain.upper()}-{contract.lower()}"
-            return f"{chain.upper()}-{contract.lower()}"
+            normalized_chain = chain.lower()
+            if normalized_chain == 'megaeth-testnet':
+                normalized_chain = 'megaethtestnet'
+            if normalized_chain in ['eclipse', 'solana']:
+                return f"{normalized_chain.upper()}-{contract.lower()}"
+            return f"{normalized_chain.upper()}-{contract.lower()}"
         
         return ""
 
